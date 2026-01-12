@@ -25,5 +25,5 @@ type SegmentMeta struct {
 	LastRewriteAt int64
 
 	Obsolete    bool
-	SparseIndex interface{} // filled later
+	SparseIndex interface{} 
 }
