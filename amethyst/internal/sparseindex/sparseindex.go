@@ -9,4 +9,5 @@ type Builder interface {
 	Build(keys []string, offsets []int64) *SparseIndex
 	Seek(key string) int64
 }
+
 // filled later

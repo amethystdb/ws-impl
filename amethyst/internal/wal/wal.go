@@ -1,19 +1,29 @@
 package wal
+
 //package main
 
 import (
+	"amethyst/internal/common"
 	"encoding/binary"
-	"io" //ReadFull
-	"os" //FileHandling
+	"io"   //ReadFull
+	"os"   //FileHandling
 	"sync" //Mutex
 )
 
+// interface for wal
+type DiskWal interface {
+	LogPut(key string, value []byte) error
+	LogDelete(key string) error
+	ReadAll() ([]common.WALEntry, error)
+	Truncate() error
+}
+
 type DiskWAL struct {
-	file *os.File //file obj on hard drive
+	file *os.File   //file obj on hard drive
 	mu   sync.Mutex //mutex lock, only one at a time
 }
 
-//creates new or uses existing
+// creates new or uses existing
 func NewDiskWAL(path string) (*DiskWAL, error) {
 	//O_Append means append only, O_Create - make if missing and O_RDWR- read write
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
@@ -23,21 +33,19 @@ func NewDiskWAL(path string) (*DiskWAL, error) {
 	return &DiskWAL{file: f}, nil
 }
 
-
 func (w *DiskWAL) LogPut(key string, value []byte) error {
 	//create walentry struc and adds to write func
-	return w.write(WALEntry{Key: key, Value: value, Tombstone: false})
+	return w.write(common.WALEntry{Key: key, Value: value, Tombstone: false})
 }
 
 func (w *DiskWAL) LogDelete(key string) error {
 	//adds a tombstone=true
-	return w.write(WALEntry{Key: key, Tombstone: true})
+	return w.write(common.WALEntry{Key: key, Tombstone: true})
 }
 
-
-//write func
-func (w *DiskWAL) write(entry WALEntry) error {
-	w.mu.Lock() //locked mutex
+// write func
+func (w *DiskWAL) write(entry common.WALEntry) error {
+	w.mu.Lock()         //locked mutex
 	defer w.mu.Unlock() //unlock mutex when over
 
 	// Format: KeyLen(4)| ValLen(4)| Tombstone(1)| KeyBytes| ValBytes
@@ -62,22 +70,20 @@ func (w *DiskWAL) write(entry WALEntry) error {
 	}
 
 	//write to phy disk
-	return w.file.Sync() 
+	return w.file.Sync()
 }
 
-
-
-//on start to reconstruct db
-func (w *DiskWAL) ReadAll() ([]WALEntry, error) {
+// on start to reconstruct db
+func (w *DiskWAL) ReadAll() ([]common.WALEntry, error) {
 	//mutex lock and unlock
 	w.mu.Lock()
-	defer w.mu.Unlock() 
+	defer w.mu.Unlock()
 
 	//move marker to thr front
 	if _, err := w.file.Seek(0, 0); err != nil {
 		return nil, err
 	}
-	var entries []WALEntry
+	var entries []common.WALEntry
 
 	//till EOF
 	for {
@@ -106,12 +112,12 @@ func (w *DiskWAL) ReadAll() ([]WALEntry, error) {
 		}
 
 		//add completed entry to list
-		entries = append(entries, WALEntry{Key: string(keyBuf), Value: valBuf, Tombstone: isTomb})
+		entries = append(entries, common.WALEntry{Key: string(keyBuf), Value: valBuf, Tombstone: isTomb})
 	}
 	return entries, nil //return full list
 }
 
-//clear
+// clear
 func (w *DiskWAL) Truncate() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
