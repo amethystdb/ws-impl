@@ -27,3 +27,9 @@ type SegmentMeta struct {
 	Obsolete    bool
 	SparseIndex interface{} 
 }
+
+type WALEntry struct{
+	Key       string
+	Value     []byte
+	Tombstone bool
+}
