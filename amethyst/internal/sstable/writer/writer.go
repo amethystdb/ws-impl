@@ -5,6 +5,8 @@ import (
 	"amethyst/internal/segmentfile"
 	"amethyst/internal/sparseindex"
 	"encoding/binary"
+	"time"
+	"github.com/google/uuid"
 )
 
 type SSTableWriter interface {
@@ -17,9 +19,10 @@ type SSTableWriter interface {
 
 type writer struct {
 	fileMgr segmentfile.SegmentFileManager
-	indexBuilder sparseindex.SparseIndexBuilder
+	indexBuilder sparseindex.Builder
 }
-func NewWriter( fileMgr segmentfile.SegmentFileManager, indexBuilder sparseindex.SparseIndexBuilder) *writer {
+
+func NewWriter(fileMgr segmentfile.SegmentFileManager, indexBuilder sparseindex.Builder) *writer {
 	return &writer{
 		fileMgr: fileMgr,
 		indexBuilder: indexBuilder,
@@ -30,7 +33,7 @@ func (w *writer) WriteSegment(
 	sortedData map[string][]byte,
 	strategy common.CompactionType,
 ) (*common.SegmentMeta, error){
-	segmentID :=uuid.new().String()
+	segmentID := uuid.New().String()
 	now := time.Now().Unix()
 	
 	buf :=make([]byte,0, 1024)
@@ -60,7 +63,7 @@ func (w *writer) WriteSegment(
 			first = false
 
 		}
-		maxKey = k
+		maxKey = key
 	}
 	writeString(minKey)
 	writeString(maxKey)
@@ -107,7 +110,7 @@ func (w *writer) WriteSegment(
 	}
 
 	//fooooooter
-	tmp8 :=make([]byte, 8)
+	tmp8 =make([]byte, 8)
 	binary.BigEndian.PutUint64(tmp8, uint64(sparseOffset))
 	buf = append(buf, tmp8...)
 
