@@ -11,41 +11,41 @@ import (
 )
 
 // interface for wal
-type DiskWal interface {
+type WAL interface {
 	LogPut(key string, value []byte) error
 	LogDelete(key string) error
 	ReadAll() ([]common.WALEntry, error)
 	Truncate() error
 }
 
-type DiskWAL struct {
+type diskWAL struct {
 	file *os.File //file obj on hard drive
 	path string
 	mu   sync.Mutex //mutex lock, only one at a time
 }
 
 // creates new or uses existing
-func NewDiskWAL(path string) (*DiskWAL, error) {
+func NewDiskWAL(path string) (WAL, error) {
 	//O_Append means append only, O_Create - make if missing and O_RDWR- read write
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		return nil, err
 	}
-	return &DiskWAL{file: f, path: path}, nil
+	return &diskWAL{file: f, path: path}, nil
 }
 
-func (w *DiskWAL) LogPut(key string, value []byte) error {
+func (w *diskWAL) LogPut(key string, value []byte) error {
 	//create walentry struc and adds to write func
 	return w.write(common.WALEntry{Key: key, Value: value, Tombstone: false})
 }
 
-func (w *DiskWAL) LogDelete(key string) error {
+func (w *diskWAL) LogDelete(key string) error {
 	//adds a tombstone=true
 	return w.write(common.WALEntry{Key: key, Tombstone: true})
 }
 
 // write func
-func (w *DiskWAL) write(entry common.WALEntry) error {
+func (w *diskWAL) write(entry common.WALEntry) error {
 	w.mu.Lock()         //locked mutex
 	defer w.mu.Unlock() //unlock mutex when over
 
@@ -75,7 +75,7 @@ func (w *DiskWAL) write(entry common.WALEntry) error {
 }
 
 // on start to reconstruct db
-func (w *DiskWAL) ReadAll() ([]common.WALEntry, error) {
+func (w *diskWAL) ReadAll() ([]common.WALEntry, error) {
 	//mutex lock and unlock
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -119,7 +119,7 @@ func (w *DiskWAL) ReadAll() ([]common.WALEntry, error) {
 }
 
 // clear
-func (w *DiskWAL) Truncate() error {
+func (w *diskWAL) Truncate() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.file != nil {
