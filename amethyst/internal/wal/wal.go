@@ -19,7 +19,8 @@ type DiskWal interface {
 }
 
 type DiskWAL struct {
-	file *os.File   //file obj on hard drive
+	file *os.File //file obj on hard drive
+	path string
 	mu   sync.Mutex //mutex lock, only one at a time
 }
 
@@ -30,7 +31,7 @@ func NewDiskWAL(path string) (*DiskWAL, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &DiskWAL{file: f}, nil
+	return &DiskWAL{file: f, path: path}, nil
 }
 
 func (w *DiskWAL) LogPut(key string, value []byte) error {
@@ -121,5 +122,9 @@ func (w *DiskWAL) ReadAll() ([]common.WALEntry, error) {
 func (w *DiskWAL) Truncate() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.file.Truncate(0) //write 0
+	if w.file != nil {
+		w.file.Close()
+	}
+
+	return os.Remove(w.path)
 }
