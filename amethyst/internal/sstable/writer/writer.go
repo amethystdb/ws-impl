@@ -139,6 +139,8 @@ func (w *writer) WriteSegment(
 
 		Obsolete: false,
 		SparseIndex: sparse,
+		DataStartOffset: dataStartOffset,
+		SparseIndexOffset: sparseOffset,
 	}
 	return meta, nil
 	}

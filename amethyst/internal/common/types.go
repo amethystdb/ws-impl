@@ -26,6 +26,8 @@ type SegmentMeta struct {
 
 	Obsolete    bool
 	SparseIndex interface{}
+	DataStartOffset   int64
+	SparseIndexOffset int64
 }
 
 // Size returns the on-disk size of the segment in bytes for compaction decision
