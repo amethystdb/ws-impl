@@ -5,58 +5,60 @@ import (
 	"amethyst/internal/metadata"
 	"amethyst/internal/sstable/reader"
 	"amethyst/internal/sstable/writer"
+	"log"
 )
-
 
 type Executor interface {
 	Execute(plan *Plan) (*common.SegmentMeta, error)
 }
 
-type executor struct{
-	meta metadata.Tracker
+type executor struct {
+	meta   metadata.Tracker
 	reader reader.SSTableReader
 	writer writer.SSTableWriter
 }
-func newExecutor(
+
+func NewExecutor(
 	meta metadata.Tracker,
 	reader reader.SSTableReader,
 	writer writer.SSTableWriter,
 ) *executor {
 	return &executor{
-		meta:  meta,
+		meta:   meta,
 		reader: reader,
 		writer: writer,
 	}
 }
 
 func (e *executor) Execute(plan *Plan) (*common.SegmentMeta, error) {
-	//currently only one input segment is supported
-	input:=plan.Inputs[0]
-	//reconstruct full kv map
+	input := plan.Inputs[0]
 	merged := make(map[string][]byte)
 
-	//scan entire segment range, its intentional for clarity purpose
-	//we bruteforce scan by key range, assuming that keys are enumerable by range
-	//in real world, reader is used record by record, but for now we reuse the semantics of reader
-	for _, seg:= range plan.Inputs{
-		_=seg
-	
+	// Scan all input segments and merge (last write wins)
+	for _, seg := range plan.Inputs {
+		data, err := e.reader.Scan(seg)
+		if err != nil {
+			return nil, err
+		}
+
+		// Merge: later segments in the list override earlier ones
+		for k, v := range data {
+			merged[k] = v
+		}
 	}
 
-	// this implementation is aimed at producing evaluation results for a workshop, so for now we can assume that
-	// the reader can iterate keys, and last write wins
-
-
-	//write new seg
-	newSeg, err:= e.writer.WriteSegment(merged, plan.OutputStrategy)
+	// Write new segment with the target strategy
+	newSeg, err := e.writer.WriteSegment(merged, plan.OutputStrategy)
 	if err != nil {
 		return nil, err
 	}
 	e.meta.RegisterSegment(newSeg)
 
+	// Mark old segments obsolete
 	for _, seg := range plan.Inputs {
 		e.meta.MarkObsolete(seg.ID)
-	}	
+	}
 
+	log.Printf("REWRITE %v → %v (%s)", input.Strategy, newSeg.Strategy, plan.Reason)
 	return newSeg, nil
 }

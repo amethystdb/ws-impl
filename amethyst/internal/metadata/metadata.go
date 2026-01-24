@@ -27,6 +27,7 @@ func NewTracker() Tracker {
 func (t *tracker) RegisterSegment(meta *common.SegmentMeta) {
 	t.segments[meta.ID] = meta
 	// prepend so newest segments come first
+	//compute overlapcount function to be added here a bit later.
 	t.ordered = append([]*common.SegmentMeta{meta}, t.ordered...)
 }
 

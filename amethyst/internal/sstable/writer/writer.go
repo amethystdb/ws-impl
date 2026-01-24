@@ -5,8 +5,9 @@ import (
 	"amethyst/internal/segmentfile"
 	"amethyst/internal/sparseindex"
 	"encoding/binary"
-	"time"
 	"github.com/google/uuid"
+	"sort"
+	"time"
 )
 
 type SSTableWriter interface {
@@ -16,15 +17,14 @@ type SSTableWriter interface {
 	) (*common.SegmentMeta, error)
 }
 
-
 type writer struct {
-	fileMgr segmentfile.SegmentFileManager
+	fileMgr      segmentfile.SegmentFileManager
 	indexBuilder sparseindex.Builder
 }
 
 func NewWriter(fileMgr segmentfile.SegmentFileManager, indexBuilder sparseindex.Builder) *writer {
 	return &writer{
-		fileMgr: fileMgr,
+		fileMgr:      fileMgr,
 		indexBuilder: indexBuilder,
 	}
 }
@@ -32,15 +32,15 @@ func NewWriter(fileMgr segmentfile.SegmentFileManager, indexBuilder sparseindex.
 func (w *writer) WriteSegment(
 	sortedData map[string][]byte,
 	strategy common.CompactionType,
-) (*common.SegmentMeta, error){
+) (*common.SegmentMeta, error) {
 	segmentID := uuid.New().String()
 	now := time.Now().Unix()
-	
-	buf :=make([]byte,0, 1024)
 
-	// header 
-	writeString :=func(s string){
-		tmp :=make([]byte, 4)
+	buf := make([]byte, 0, 1024)
+
+	// header
+	writeString := func(s string) {
+		tmp := make([]byte, 4)
 		binary.BigEndian.PutUint32(tmp, uint32(len(s)))
 		buf = append(buf, tmp...)
 		buf = append(buf, []byte(s)...)
@@ -48,17 +48,18 @@ func (w *writer) WriteSegment(
 	writeString(segmentID)
 
 	var minKey, maxKey string
-	first :=true
+	first := true
 
-	keys :=make([]string,0, len(sortedData))
-	for k :=range sortedData {
+	keys := make([]string, 0, len(sortedData))
+	for k := range sortedData {
 		keys = append(keys, k)
 	}
 
+	sort.Strings(keys)
 
-	//keys are sorted by memtable contract 
-	for _, key :=range keys {
-		if first{
+	//keys are sorted by memtable contract
+	for _, key := range keys {
+		if first {
 			minKey = key
 			first = false
 
@@ -68,20 +69,20 @@ func (w *writer) WriteSegment(
 	writeString(minKey)
 	writeString(maxKey)
 	buf = append(buf, byte(strategy))
-	tmp8 :=make([]byte, 8)
+	tmp8 := make([]byte, 8)
 	binary.BigEndian.PutUint64(tmp8, uint64(len(sortedData)))
 	buf = append(buf, tmp8...)
 
 	//actual data entry
 	offsets := make([]int64, 0, len(keys))
-	dataStartOffset :=int64(len(buf))
-	
-	for _, key := range(keys){
+	dataStartOffset := int64(len(buf))
+
+	for _, key := range keys {
 		offsets = append(offsets, int64(len(buf))-dataStartOffset)
-		val :=sortedData[key]
-		tombstone :=val ==nil
-		
-		tmp:=make([]byte, 9)
+		val := sortedData[key]
+		tombstone := val == nil
+
+		tmp := make([]byte, 9)
 		binary.BigEndian.PutUint32(tmp[0:4], uint32(len(key)))
 		binary.BigEndian.PutUint32(tmp[4:8], uint32(len(val)))
 		if tombstone {
@@ -95,22 +96,22 @@ func (w *writer) WriteSegment(
 
 	}
 	//sparseindex
-	sparse:=w.indexBuilder.Build(keys, offsets)
+	sparse := w.indexBuilder.Build(keys, offsets)
 	//serialize sparse index
-	sparseOffset :=int64(len(buf))
+	sparseOffset := int64(len(buf))
 
-	for i, k :=range sparse.Keys {
-		tmp:=make([]byte, 4)
+	for i, k := range sparse.Keys {
+		tmp := make([]byte, 4)
 		binary.BigEndian.PutUint32(tmp, uint32(len(k)))
 		buf = append(buf, tmp...)
 		buf = append(buf, []byte(k)...)
-		tmp8:=make([]byte, 8)
+		tmp8 := make([]byte, 8)
 		binary.BigEndian.PutUint64(tmp8, uint64(sparse.Offsets[i]))
 		buf = append(buf, tmp8...)
 	}
 
 	//fooooooter
-	tmp8 =make([]byte, 8)
+	tmp8 = make([]byte, 8)
 	binary.BigEndian.PutUint64(tmp8, uint64(sparseOffset))
 	buf = append(buf, tmp8...)
 
@@ -120,8 +121,8 @@ func (w *writer) WriteSegment(
 		return nil, err
 	}
 
-	meta:= &common.SegmentMeta{
-		ID: segmentID,
+	meta := &common.SegmentMeta{
+		ID:     segmentID,
 		Offset: offset,
 		Length: length,
 
@@ -130,19 +131,17 @@ func (w *writer) WriteSegment(
 
 		Strategy: strategy,
 
-		ReadCount: 0,
-		WriteCount: 0,
+		ReadCount:    0,
+		WriteCount:   0,
 		OverlapCount: 0,
 
-		CreatedAt: now,
+		CreatedAt:     now,
 		LastRewriteAt: now,
 
-		Obsolete: false,
-		SparseIndex: sparse,
-		DataStartOffset: dataStartOffset,
+		Obsolete:          false,
+		SparseIndex:       sparse,
+		DataStartOffset:   dataStartOffset,
 		SparseIndexOffset: sparseOffset,
 	}
 	return meta, nil
-	}
-
-
+}

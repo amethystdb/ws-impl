@@ -5,6 +5,7 @@ import (
 	"amethyst/internal/common"
 	"amethyst/internal/metadata"
 )
+
 type Plan struct {
 	Inputs         []*common.SegmentMeta
 	OutputStrategy common.CompactionType
@@ -13,10 +14,7 @@ type Plan struct {
 
 type Director interface {
 	MaybePlan() *Plan
-	
 }
-
-
 
 // director produces compaction plans based on metadata + FSM.
 type director struct {
@@ -24,7 +22,7 @@ type director struct {
 	fsm  adaptive.Controller
 }
 
-func Newdirector(
+func NewDirector(
 	meta metadata.Tracker,
 	fsm adaptive.Controller,
 ) *director {
@@ -51,9 +49,9 @@ func (d *director) MaybePlan() *Plan {
 		}
 
 		return &Plan{
-			Inputs:        []*common.SegmentMeta{seg},
+			Inputs:         []*common.SegmentMeta{seg},
 			OutputStrategy: newStrategy,
-			Reason:        reason,
+			Reason:         reason,
 		}
 	}
 

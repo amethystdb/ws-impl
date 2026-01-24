@@ -48,7 +48,7 @@ func (w *diskWAL) LogDelete(key string) error {
 func (w *diskWAL) write(entry common.WALEntry) error {
 	w.mu.Lock()         //locked mutex
 	defer w.mu.Unlock() //unlock mutex when over
-	
+
 	// Format: KeyLen(4)| ValLen(4)| Tombstone(1)| KeyBytes| ValBytes
 	header := make([]byte, 9)
 	binary.BigEndian.PutUint32(header[0:4], uint32(len(entry.Key)))

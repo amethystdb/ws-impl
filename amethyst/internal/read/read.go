@@ -1,8 +1,8 @@
 package read
 
 import (
-	"amethyst/internal/metadata"
 	"amethyst/internal/memtable"
+	"amethyst/internal/metadata"
 	"amethyst/internal/sstable/reader"
 )
 

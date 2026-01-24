@@ -24,8 +24,8 @@ type SegmentMeta struct {
 	CreatedAt     int64
 	LastRewriteAt int64
 
-	Obsolete    bool
-	SparseIndex interface{}
+	Obsolete          bool
+	SparseIndex       interface{}
 	DataStartOffset   int64
 	SparseIndexOffset int64
 }
