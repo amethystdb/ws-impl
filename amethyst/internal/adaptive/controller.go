@@ -7,7 +7,7 @@ import (
 )
 
 const MinSegmentSize = int64(4 * 1024)        // 4KB
-const MinRewriteInterval = int64(1)           // 1 second (was 30)
+const MinRewriteInterval = int64(1)           // 1 second 
 const ReadWriteRatioThreshold = 4.0
 const OverlapThreshold = 2
 const WriteCountThreshold = int64(100)
