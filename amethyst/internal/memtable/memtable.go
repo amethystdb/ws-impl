@@ -12,18 +12,18 @@ type Memtable interface {
 	Get(key string) ([]byte, bool)
 
 	ShouldFlush() bool
-	Flush() map[string][]byte
+	Flush() []common.KVEntry
 }
 
 type memtable struct {
-	data       map[string]common.WALEntry
+	data       []common.KVEntry //sorted order
 	maxEntries int
 	mu         sync.RWMutex
 }
 
 func NewMemtable(maxEntries int) Memtable {
 	return &memtable{
-		data:       make(map[string]common.WALEntry),
+		data:       make([]common.KVEntry, 0),
 		maxEntries: maxEntries,
 	}
 }
@@ -31,24 +31,43 @@ func NewMemtable(maxEntries int) Memtable {
 func (m *memtable) Put(key string, value []byte) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.data[key] = common.WALEntry{Key: key, Value: value, Tombstone: false}
+	// Binary search to find the correct insertion point
+	i := sort.Search(len(m.data), func(i int) bool { return m.data[i].Key >= key })
+	if i < len(m.data) && m.data[i].Key == key {
+		m.data[i] = common.KVEntry{Key: key, Value: value, Tombstone: false}
+	} else {
+		// Insert while maintaining sort order
+		m.data = append(m.data, common.KVEntry{})
+		copy(m.data[i+1:], m.data[i:])
+		m.data[i] = common.KVEntry{Key: key, Value: value, Tombstone: false}
+	}
 }
 
 func (m *memtable) Delete(key string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.data[key] = common.WALEntry{Key: key, Tombstone: true}
+	// Binary search to find the correct insertion point
+	i := sort.Search(len(m.data), func(i int) bool { return m.data[i].Key >= key })
+
+	if i < len(m.data) && m.data[i].Key == key {
+		m.data[i] = common.KVEntry{Key: key, Value: nil, Tombstone: true}
+	} else {
+		// Insert tombstone while maintaining sort order
+		m.data = append(m.data, common.KVEntry{})
+		copy(m.data[i+1:], m.data[i:])
+		m.data[i] = common.KVEntry{Key: key, Value: nil, Tombstone: true}
+	}
 }
 
 func (m *memtable) Get(key string) ([]byte, bool) {
 	m.mu.RLock() // Request shared read access
 	defer m.mu.RUnlock()
 
-	entry, ok := m.data[key]
-	if !ok || entry.Tombstone {
-		return nil, false //not found if missing
+	i := sort.Search(len(m.data), func(i int) bool { return m.data[i].Key >= key })
+	if i < len(m.data) && m.data[i].Key == key && !m.data[i].Tombstone {
+		return m.data[i].Value, true
 	}
-	return entry.Value, true
+	return nil, false
 }
 
 // returns true if mem is full
@@ -59,29 +78,16 @@ func (m *memtable) ShouldFlush() bool {
 }
 
 // clears data and returns sorted for SSTable Writer
-func (m *memtable) Flush() map[string][]byte {
+func (m *memtable) Flush() []common.KVEntry {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	//keys to sort
-	keys := make([]string, 0, len(m.data))
-	for k := range m.data {
-		keys = append(keys, k)
+	// If there's no data, return nil so her main.go skips the write
+	if len(m.data) == 0 {
+		return nil //
 	}
 
-	//sorted for SSTable
-	sort.Strings(keys)
-
-	//sorted output map
-	result := make(map[string][]byte)
-	for _, k := range keys {
-		entry := m.data[k]
-		if !entry.Tombstone {
-			result[k] = entry.Value
-		}
-	}
-
-	//reset internal map for new batch
-	m.data = make(map[string]common.WALEntry)
-	return result
+	oldData := m.data
+	m.data = make([]common.KVEntry, 0)
+	return oldData
 }
