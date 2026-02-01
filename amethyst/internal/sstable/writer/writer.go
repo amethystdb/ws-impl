@@ -5,14 +5,15 @@ import (
 	"amethyst/internal/segmentfile"
 	"amethyst/internal/sparseindex"
 	"encoding/binary"
-	"github.com/google/uuid"
-	"sort"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type SSTableWriter interface {
+	// Updated to accept the sorted slice from Memtable
 	WriteSegment(
-		sortedData map[string][]byte,
+		sortedData []common.KVEntry,
 		strategy common.CompactionType,
 	) (*common.SegmentMeta, error)
 }
@@ -30,7 +31,7 @@ func NewWriter(fileMgr segmentfile.SegmentFileManager, indexBuilder sparseindex.
 }
 
 func (w *writer) WriteSegment(
-	sortedData map[string][]byte,
+	sortedData []common.KVEntry,
 	strategy common.CompactionType,
 ) (*common.SegmentMeta, error) {
 	segmentID := uuid.New().String()
@@ -38,66 +39,61 @@ func (w *writer) WriteSegment(
 
 	buf := make([]byte, 0, 1024)
 
-	// header
+	// Helper to write length-prefixed strings
 	writeString := func(s string) {
 		tmp := make([]byte, 4)
 		binary.BigEndian.PutUint32(tmp, uint32(len(s)))
 		buf = append(buf, tmp...)
 		buf = append(buf, []byte(s)...)
 	}
+
+	// 1. Header: ID, MinKey, MaxKey
 	writeString(segmentID)
 
-	var minKey, maxKey string
-	first := true
-
-	keys := make([]string, 0, len(sortedData))
-	for k := range sortedData {
-		keys = append(keys, k)
+	if len(sortedData) == 0 {
+		return nil, nil // Or handle empty flush appropriately
 	}
 
-	sort.Strings(keys)
+	minKey := sortedData[0].Key
+	maxKey := sortedData[len(sortedData)-1].Key
 
-	//keys are sorted by memtable contract
-	for _, key := range keys {
-		if first {
-			minKey = key
-			first = false
-
-		}
-		maxKey = key
-	}
 	writeString(minKey)
 	writeString(maxKey)
+
+	// 2. Metadata: Strategy and Record Count
 	buf = append(buf, byte(strategy))
 	tmp8 := make([]byte, 8)
 	binary.BigEndian.PutUint64(tmp8, uint64(len(sortedData)))
 	buf = append(buf, tmp8...)
 
-	//actual data entry
-	offsets := make([]int64, 0, len(keys))
+	// 3. Actual Data Entries
+	// We track keys and offsets specifically for the Sparse Index
+	keysForIndex := make([]string, 0, len(sortedData))
+	offsetsForIndex := make([]int64, 0, len(sortedData))
 	dataStartOffset := int64(len(buf))
 
-	for _, key := range keys {
-		offsets = append(offsets, int64(len(buf))-dataStartOffset)
-		val := sortedData[key]
-		tombstone := val == nil
+	for _, entry := range sortedData {
+		// Calculate offset relative to data start for the index
+		offsetsForIndex = append(offsetsForIndex, int64(len(buf))-dataStartOffset)
+		keysForIndex = append(keysForIndex, entry.Key)
 
 		tmp := make([]byte, 9)
-		binary.BigEndian.PutUint32(tmp[0:4], uint32(len(key)))
-		binary.BigEndian.PutUint32(tmp[4:8], uint32(len(val)))
-		if tombstone {
+		binary.BigEndian.PutUint32(tmp[0:4], uint32(len(entry.Key)))
+		binary.BigEndian.PutUint32(tmp[4:8], uint32(len(entry.Value)))
+
+		if entry.Tombstone {
 			tmp[8] = 1
 		} else {
 			tmp[8] = 0
 		}
-		buf = append(buf, tmp...)
-		buf = append(buf, []byte(key)...)
-		buf = append(buf, val...)
 
+		buf = append(buf, tmp...)
+		buf = append(buf, []byte(entry.Key)...)
+		buf = append(buf, entry.Value...)
 	}
-	//sparseindex
-	sparse := w.indexBuilder.Build(keys, offsets)
-	//serialize sparse index
+
+	// 4. Build and Serialize Sparse Index
+	sparse := w.indexBuilder.Build(keysForIndex, offsetsForIndex)
 	sparseOffset := int64(len(buf))
 
 	for i, k := range sparse.Keys {
@@ -105,43 +101,40 @@ func (w *writer) WriteSegment(
 		binary.BigEndian.PutUint32(tmp, uint32(len(k)))
 		buf = append(buf, tmp...)
 		buf = append(buf, []byte(k)...)
-		tmp8 := make([]byte, 8)
-		binary.BigEndian.PutUint64(tmp8, uint64(sparse.Offsets[i]))
-		buf = append(buf, tmp8...)
+
+		tmp8_idx := make([]byte, 8)
+		binary.BigEndian.PutUint64(tmp8_idx, uint64(sparse.Offsets[i]))
+		buf = append(buf, tmp8_idx...)
 	}
 
-	//fooooooter
-	tmp8 = make([]byte, 8)
-	binary.BigEndian.PutUint64(tmp8, uint64(sparseOffset))
-	buf = append(buf, tmp8...)
+	// 5. Footer: Pointer to where the Sparse Index starts
+	tmp8_footer := make([]byte, 8)
+	binary.BigEndian.PutUint64(tmp8_footer, uint64(sparseOffset))
+	buf = append(buf, tmp8_footer...)
 
-	//writing to disk
+	// 6. Final Disk Write
 	offset, length, err := w.fileMgr.Append(buf)
 	if err != nil {
 		return nil, err
 	}
 
 	meta := &common.SegmentMeta{
-		ID:     segmentID,
-		Offset: offset,
-		Length: length,
-
-		MinKey: minKey,
-		MaxKey: maxKey,
-
-		Strategy: strategy,
-
-		ReadCount:    0,
-		WriteCount:   0,
-		OverlapCount: 0,
-
-		CreatedAt:     now,
-		LastRewriteAt: now,
-
+		ID:                segmentID,
+		Offset:            offset,
+		Length:            length,
+		MinKey:            minKey,
+		MaxKey:            maxKey,
+		Strategy:          strategy,
+		ReadCount:         0,
+		WriteCount:        0,
+		OverlapCount:      0, // Will be updated by Tracker
+		CreatedAt:         now,
+		LastRewriteAt:     now,
 		Obsolete:          false,
 		SparseIndex:       sparse,
 		DataStartOffset:   dataStartOffset,
 		SparseIndexOffset: sparseOffset,
 	}
+
 	return meta, nil
 }

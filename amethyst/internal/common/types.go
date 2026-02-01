@@ -55,3 +55,10 @@ type WALEntry struct {
 	Value     []byte
 	Tombstone bool
 }
+
+// memtable sorted key entry
+type KVEntry struct {
+	Key       string
+	Value     []byte
+	Tombstone bool
+}

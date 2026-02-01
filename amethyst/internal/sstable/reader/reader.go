@@ -85,11 +85,11 @@ func (r *Reader) Get(meta *common.SegmentMeta, target string) ([]byte, bool) {
 	return nil, false
 }
 
-// Scan reads all non-deleted records from a segment
+// Scan reads all records from a segment, including tombstones as nil values.
+// This allows the Executor to correctly shadow old data during compaction.
 func (r *Reader) Scan(meta *common.SegmentMeta) (map[string][]byte, error) {
 	result := make(map[string][]byte)
 
-	// Read entire data section
 	start := meta.Offset + meta.DataStartOffset
 	end := meta.Offset + meta.SparseIndexOffset
 
@@ -106,7 +106,7 @@ func (r *Reader) Scan(meta *common.SegmentMeta) (map[string][]byte, error) {
 		var tomb byte
 
 		if err := binary.Read(buf, binary.BigEndian, &kLen); err != nil {
-			break // End of valid data
+			break
 		}
 		if err := binary.Read(buf, binary.BigEndian, &vLen); err != nil {
 			break
@@ -126,8 +126,11 @@ func (r *Reader) Scan(meta *common.SegmentMeta) (map[string][]byte, error) {
 			break
 		}
 
-		// Skip tombstoned records
-		if tomb == 0 {
+		// FIX: Include the key even if it is a tombstone (set to nil)
+		// This is critical for the Executor to maintain data integrity.
+		if tomb == 1 {
+			result[key] = nil
+		} else {
 			result[key] = valBytes
 		}
 	}
