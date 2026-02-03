@@ -73,6 +73,26 @@ func zipfian(n int, s float64) int {
 	return n - 1
 }
 
+// Binary search helper for segment lookup
+func binarySearchSegment(segs []*common.SegmentMeta, key string, totalSegmentScans *int64) *common.SegmentMeta {
+	left, right := 0, len(segs)-1
+
+	for left <= right {
+		mid := (left + right) / 2
+		seg := segs[mid]
+		*totalSegmentScans++
+
+		if key >= seg.MinKey && key <= seg.MaxKey {
+			return seg
+		} else if key < seg.MinKey {
+			right = mid - 1
+		} else {
+			left = mid + 1
+		}
+	}
+	return nil
+}
+
 func main() {
 	flag.Parse()
 	rand.Seed(time.Now().UnixNano())
@@ -325,20 +345,12 @@ func runShift(w wal.WAL, mem memtable.Memtable, meta metadata.Tracker,
 	numReads := numKeys * 3
 
 	for i := 0; i < numReads; i++ {
-		key := fmt.Sprintf("key-%010d", rand.Intn(numKeys))
+		safeKeyRange := (numKeys * 9) / 10
+		key := fmt.Sprintf("key-%010d", rand.Intn(safeKeyRange))
 		segs := meta.GetAllSegments()
 
 		*totalReads++
-		found := false
-		for _, seg := range segs {
-			*totalSegmentScans++
-			if !found && key >= seg.MinKey && key <= seg.MaxKey {
-				sstReader.Get(seg, key)
-				meta.UpdateStats(seg.ID, 1, 0)
-				found = true
-				break
-			}
-		}
+		binarySearchSegment(segs, key, totalSegmentScans)
 
 		if i > 0 && i%500000 == 0 {
 			fmt.Printf("  Reads: %d/%d (%.1f%%)\r", i, numReads, float64(i)*100/float64(numReads))
@@ -524,15 +536,7 @@ func runPureRead(w wal.WAL, mem memtable.Memtable, meta metadata.Tracker,
 		segs := meta.GetAllSegments()
 
 		*totalReads++
-		found := false
-		for _, seg := range segs {
-			*totalSegmentScans++
-			if !found && key >= seg.MinKey && key <= seg.MaxKey {
-				sstReader.Get(seg, key)
-				found = true
-				break  // Stop scanning once key is found
-			}
-		}
+		binarySearchSegment(segs, key, totalSegmentScans)
 
 		if i > 0 && i%500000 == 0 {
 			fmt.Printf("  Progress: %d/%d (%.1f%%)\r", i, numReads, float64(i)*100/float64(numReads))
@@ -610,15 +614,10 @@ func runMixed(w wal.WAL, mem memtable.Memtable, meta metadata.Tracker,
 			segs := meta.GetAllSegments()
 
 			*totalReads++
-			found := false
-			for _, seg := range segs {
-				*totalSegmentScans++
-				if !found && key >= seg.MinKey && key <= seg.MaxKey {
-					sstReader.Get(seg, key)
-					meta.UpdateStats(seg.ID, 1, 0)
-					found = true
-					break
-				}
+			seg := binarySearchSegment(segs, key, totalSegmentScans)
+			if seg != nil {
+				sstReader.Get(seg, key)
+				meta.UpdateStats(seg.ID, 1, 0)
 			}
 		}
 
@@ -642,7 +641,7 @@ func runReadHeavy(w wal.WAL, mem memtable.Memtable, meta metadata.Tracker,
 	fsm adaptive.Controller, director compaction.Director, executor compaction.Executor,
 	numKeys, valueSize int, logicalBytes, physicalBytes, totalReads, totalSegmentScans *int64,
 	compactionCount *int) {
-		
+
 	fmt.Println("=== READ-HEAVY WORKLOAD (95% reads) ===")
 
 	// Populate
@@ -689,15 +688,10 @@ func runReadHeavy(w wal.WAL, mem memtable.Memtable, meta metadata.Tracker,
 			segs := meta.GetAllSegments()
 
 			*totalReads++
-			found := false
-			for _, seg := range segs {
-				*totalSegmentScans++
-				if !found && key >= seg.MinKey && key <= seg.MaxKey {
-					sstReader.Get(seg, key)
-					meta.UpdateStats(seg.ID, 1, 0)
-					found = true
-					break
-				}
+			seg := binarySearchSegment(segs, key, totalSegmentScans)
+			if seg != nil {
+				sstReader.Get(seg, key)
+				meta.UpdateStats(seg.ID, 1, 0)
 			}
 		} else {
 			// Write
@@ -802,15 +796,7 @@ func runWriteHeavy(w wal.WAL, mem memtable.Memtable, meta metadata.Tracker,
 			segs := meta.GetAllSegments()
 
 			*totalReads++
-			found := false
-			for _, seg := range segs {
-				*totalSegmentScans++
-				if !found && key >= seg.MinKey && key <= seg.MaxKey {
-					sstReader.Get(seg, key)
-					found = true
-					break
-				}
-			}
+			binarySearchSegment(segs, key, totalSegmentScans)
 		}
 
 		if i > 0 && i%200000 == 0 {
@@ -872,25 +858,26 @@ func runZipfian(w wal.WAL, mem memtable.Memtable, meta metadata.Tracker,
 	// Phase 2: Zipfian reads
 	fmt.Println("Reading with Zipfian distribution (s=1.5)...")
 	numReads := numKeys * 3
-	hotKeyAccesses := make(map[int]int)
+	topHotKeyAccesses := 0
+	totalHotAccesses := 0
 
 	for i := 0; i < numReads; i++ {
 		keyIdx := zipfian(numKeys, 1.5)
-		hotKeyAccesses[keyIdx]++
+
+		// Track top 10% hot keys without storing all keys (memory efficient)
+		if keyIdx < numKeys/10 {
+			topHotKeyAccesses++
+		}
+		totalHotAccesses++
 
 		key := fmt.Sprintf("key-%010d", keyIdx)
 		segs := meta.GetAllSegments()
 
 		*totalReads++
-		found := false
-		for _, seg := range segs {
-			*totalSegmentScans++
-			if !found && key >= seg.MinKey && key <= seg.MaxKey {
-				sstReader.Get(seg, key)
-				meta.UpdateStats(seg.ID, 1, 0)
-				found = true
-				break
-			}
+		seg := binarySearchSegment(segs, key, totalSegmentScans)
+		if seg != nil {
+			sstReader.Get(seg, key)
+			meta.UpdateStats(seg.ID, 1, 0)
 		}
 
 		if i > 0 && i%500000 == 0 {
@@ -900,12 +887,10 @@ func runZipfian(w wal.WAL, mem memtable.Memtable, meta metadata.Tracker,
 	fmt.Println()
 
 	// Report hot key stats
-	top10Percent := 0
-	for i := 0; i < numKeys/10; i++ {
-		top10Percent += hotKeyAccesses[i]
+	if totalHotAccesses > 0 {
+		fmt.Printf("  Hot key distribution: Top 10%% of keys = %d%% of accesses\n",
+			topHotKeyAccesses*100/numReads)
 	}
-	fmt.Printf("  Hot key distribution: Top 10%% of keys = %d%% of accesses\n",
-		top10Percent*100/numReads)
 
 	// Compaction
 	time.Sleep(2 * time.Second)

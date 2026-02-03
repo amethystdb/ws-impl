@@ -3,13 +3,14 @@ package metadata
 import (
 	"amethyst/internal/common"
 	"sync"
+	"sort"
 )
+
 
 type Tracker interface {
 	RegisterSegment(meta *common.SegmentMeta)
 	GetSegmentsForKey(key string) []*common.SegmentMeta
 	GetAllSegments() []*common.SegmentMeta
-	// ADD THIS: The Director needs this for the recursive loop
 	GetOverlappingSegments(target *common.SegmentMeta) []*common.SegmentMeta
 
 	MarkObsolete(id string)
@@ -88,14 +89,21 @@ func (t *tracker) GetSegmentsForKey(key string) []*common.SegmentMeta {
 }
 
 func (t *tracker) GetAllSegments() []*common.SegmentMeta {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	
 	result := make([]*common.SegmentMeta, 0, len(t.ordered))
 	for _, seg := range t.ordered {
 		if !seg.Obsolete {
 			result = append(result, seg)
 		}
 	}
+	
+	// Sort by MinKey while holding the lock
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].MinKey < result[j].MinKey
+	})
+	
 	return result
 }
 
