@@ -350,7 +350,11 @@ func runShift(w wal.WAL, mem memtable.Memtable, meta metadata.Tracker,
 		segs := meta.GetAllSegments()
 
 		*totalReads++
-		binarySearchSegment(segs, key, totalSegmentScans)
+		seg := binarySearchSegment(segs, key, totalSegmentScans)
+		if seg != nil {
+			sstReader.Get(seg, key)
+			meta.UpdateStats(seg.ID, 1, 0)
+		}
 
 		if i > 0 && i%500000 == 0 {
 			fmt.Printf("  Reads: %d/%d (%.1f%%)\r", i, numReads, float64(i)*100/float64(numReads))
