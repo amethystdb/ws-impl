@@ -138,6 +138,7 @@ func main() {
 	sstWriter := writer.NewWriter(fileMgr, indexBuilder)
 	sstReader := reader.NewReader(fileMgr)
 
+	// FIXED: Create FSMController directly
 	fsm := adaptive.NewFSMController()
 	director := compaction.NewDirector(meta, fsm)
 	executor := compaction.NewExecutor(meta, sstReader, sstWriter)
@@ -155,12 +156,12 @@ func main() {
 	// Run workload
 	switch *workloadFlag {
 	case "shift":
-		phases = runShift(w, mem, meta, sstWriter, sstReader, fsm, director, executor,
+		phases = runShift(w, mem, meta, sstWriter, sstReader, director, executor,
 			*numKeysFlag, *valueSizeFlag, &logicalBytes, &physicalBytes,
 			&totalReads, &totalSegmentScans, &compactionCount)
 
 	case "pure-write":
-		runPureWrite(w, mem, meta, sstWriter, fsm, director, executor,
+		runPureWrite(w, mem, meta, sstWriter, director, executor,
 			*numKeysFlag, *valueSizeFlag, &logicalBytes, &physicalBytes, &compactionCount)
 
 	case "pure-read":
@@ -169,22 +170,22 @@ func main() {
 			&totalReads, &totalSegmentScans)
 
 	case "mixed":
-		runMixed(w, mem, meta, sstWriter, sstReader, fsm, director, executor,
+		runMixed(w, mem, meta, sstWriter, sstReader, director, executor,
 			*numKeysFlag, *valueSizeFlag, &logicalBytes, &physicalBytes,
 			&totalReads, &totalSegmentScans, &compactionCount)
 
 	case "read-heavy":
-		runReadHeavy(w, mem, meta, sstWriter, sstReader, fsm, director, executor,
+		runReadHeavy(w, mem, meta, sstWriter, sstReader, director, executor,
 			*numKeysFlag, *valueSizeFlag, &logicalBytes, &physicalBytes,
 			&totalReads, &totalSegmentScans, &compactionCount)
 
 	case "write-heavy":
-		runWriteHeavy(w, mem, meta, sstWriter, sstReader, fsm, director, executor,
+		runWriteHeavy(w, mem, meta, sstWriter, sstReader, director, executor,
 			*numKeysFlag, *valueSizeFlag, &logicalBytes, &physicalBytes,
 			&totalReads, &totalSegmentScans, &compactionCount)
 
 	case "zipfian":
-		runZipfian(w, mem, meta, sstWriter, sstReader, fsm, director, executor,
+		runZipfian(w, mem, meta, sstWriter, sstReader, director, executor,
 			*numKeysFlag, *valueSizeFlag, &logicalBytes, &physicalBytes,
 			&totalReads, &totalSegmentScans, &compactionCount)
 
@@ -205,9 +206,9 @@ func main() {
 		ra = float64(totalSegmentScans) / float64(totalReads)
 	}
 
-	// Space amplification (approximate)
+	// Space amplification
 	allSegs := meta.GetAllSegments()
-	liveDataBytes := int64(*numKeysFlag * (*valueSizeFlag + 20)) // rough estimate
+	liveDataBytes := int64(*numKeysFlag * (*valueSizeFlag + 20))
 	totalDiskBytes := int64(0)
 	for _, seg := range allSegs {
 		totalDiskBytes += seg.Length
@@ -218,7 +219,7 @@ func main() {
 		sa = float64(totalDiskBytes) / float64(liveDataBytes)
 	}
 
-	// Sanitize all metrics (handle NaN/Inf)
+	// Sanitize all metrics
 	if math.IsNaN(wa) || math.IsInf(wa, 0) {
 		wa = 0.0
 	}
@@ -284,7 +285,7 @@ func main() {
 
 func runShift(w wal.WAL, mem memtable.Memtable, meta metadata.Tracker,
 	sstWriter writer.SSTableWriter, sstReader reader.SSTableReader,
-	fsm adaptive.Controller, director compaction.Director, executor compaction.Executor,
+	director compaction.Director, executor compaction.Executor,
 	numKeys, valueSize int, logicalBytes, physicalBytes, totalReads, totalSegmentScans *int64,
 	compactionCount *int) []PhaseResult {
 
@@ -343,6 +344,7 @@ func runShift(w wal.WAL, mem memtable.Memtable, meta metadata.Tracker,
 
 	phase2Start := time.Now()
 	numReads := numKeys * 3
+	var phase2SegmentScans int64 = 0
 
 	for i := 0; i < numReads; i++ {
 		safeKeyRange := (numKeys * 9) / 10
@@ -350,7 +352,7 @@ func runShift(w wal.WAL, mem memtable.Memtable, meta metadata.Tracker,
 		segs := meta.GetAllSegments()
 
 		*totalReads++
-		seg := binarySearchSegment(segs, key, totalSegmentScans)
+		seg := binarySearchSegment(segs, key, &phase2SegmentScans)
 		if seg != nil {
 			sstReader.Get(seg, key)
 			meta.UpdateStats(seg.ID, 1, 0)
@@ -362,9 +364,15 @@ func runShift(w wal.WAL, mem memtable.Memtable, meta metadata.Tracker,
 	}
 	fmt.Println()
 
+	// Calculate Phase 2 metrics
 	phase2Duration := time.Since(phase2Start)
-	phase2RA := float64(*totalSegmentScans) / float64(*totalReads)
+	phase2RA := float64(phase2SegmentScans) / float64(numReads)
 	phase2WA := float64(*physicalBytes) / float64(*logicalBytes)
+	*totalSegmentScans += phase2SegmentScans
+
+	//Feed Phase 2 metrics to FSM for trend detection
+	director.UpdateMetrics(phase2RA, phase2WA)
+
 	phases = append(phases, PhaseResult{
 		Name:     "read",
 		Duration: phase2Duration.Seconds(),
@@ -375,7 +383,7 @@ func runShift(w wal.WAL, mem memtable.Memtable, meta metadata.Tracker,
 	fmt.Printf("  Current RA: %.2f\n", phase2RA)
 	fmt.Printf("  Duration: %v\n", phase2Duration)
 
-	// Try compaction
+	// Try compaction (FSM decides based on trends)
 	time.Sleep(2 * time.Second)
 	if plan := director.MaybePlan(); plan != nil {
 		fmt.Printf("  Compaction triggered: %s\n", plan.Reason)
@@ -445,7 +453,7 @@ func runShift(w wal.WAL, mem memtable.Memtable, meta metadata.Tracker,
 }
 
 func runPureWrite(w wal.WAL, mem memtable.Memtable, meta metadata.Tracker,
-	sstWriter writer.SSTableWriter, fsm adaptive.Controller,
+	sstWriter writer.SSTableWriter,
 	director compaction.Director, executor compaction.Executor,
 	numKeys, valueSize int, logicalBytes, physicalBytes *int64, compactionCount *int) {
 
@@ -527,7 +535,7 @@ func runPureRead(w wal.WAL, mem memtable.Memtable, meta metadata.Tracker,
 		meta.RegisterSegment(seg)
 	}
 
-	// Reset counters (don't count population)
+	// Reset counters
 	*logicalBytes = 0
 	*physicalBytes = 0
 
@@ -551,7 +559,7 @@ func runPureRead(w wal.WAL, mem memtable.Memtable, meta metadata.Tracker,
 
 func runMixed(w wal.WAL, mem memtable.Memtable, meta metadata.Tracker,
 	sstWriter writer.SSTableWriter, sstReader reader.SSTableReader,
-	fsm adaptive.Controller, director compaction.Director, executor compaction.Executor,
+	director compaction.Director, executor compaction.Executor,
 	numKeys, valueSize int, logicalBytes, physicalBytes, totalReads, totalSegmentScans *int64,
 	compactionCount *int) {
 
@@ -642,7 +650,7 @@ func runMixed(w wal.WAL, mem memtable.Memtable, meta metadata.Tracker,
 
 func runReadHeavy(w wal.WAL, mem memtable.Memtable, meta metadata.Tracker,
 	sstWriter writer.SSTableWriter, sstReader reader.SSTableReader,
-	fsm adaptive.Controller, director compaction.Director, executor compaction.Executor,
+	director compaction.Director, executor compaction.Executor,
 	numKeys, valueSize int, logicalBytes, physicalBytes, totalReads, totalSegmentScans *int64,
 	compactionCount *int) {
 
@@ -733,7 +741,7 @@ func runReadHeavy(w wal.WAL, mem memtable.Memtable, meta metadata.Tracker,
 
 func runWriteHeavy(w wal.WAL, mem memtable.Memtable, meta metadata.Tracker,
 	sstWriter writer.SSTableWriter, sstReader reader.SSTableReader,
-	fsm adaptive.Controller, director compaction.Director, executor compaction.Executor,
+	director compaction.Director, executor compaction.Executor,
 	numKeys, valueSize int, logicalBytes, physicalBytes, totalReads, totalSegmentScans *int64,
 	compactionCount *int) {
 
@@ -820,13 +828,13 @@ func runWriteHeavy(w wal.WAL, mem memtable.Memtable, meta metadata.Tracker,
 
 func runZipfian(w wal.WAL, mem memtable.Memtable, meta metadata.Tracker,
 	sstWriter writer.SSTableWriter, sstReader reader.SSTableReader,
-	fsm adaptive.Controller, director compaction.Director, executor compaction.Executor,
+	director compaction.Director, executor compaction.Executor,
 	numKeys, valueSize int, logicalBytes, physicalBytes, totalReads, totalSegmentScans *int64,
 	compactionCount *int) {
 
 	fmt.Println("=== ZIPFIAN WORKLOAD (hot keys, s=1.5) ===")
 
-	// Phase 1: Write (sequential)
+	// Phase 1: Write
 	fmt.Println("Populating data...")
 	for i := 0; i < numKeys; i++ {
 		key := fmt.Sprintf("key-%010d", i)
@@ -863,16 +871,13 @@ func runZipfian(w wal.WAL, mem memtable.Memtable, meta metadata.Tracker,
 	fmt.Println("Reading with Zipfian distribution (s=1.5)...")
 	numReads := numKeys * 3
 	topHotKeyAccesses := 0
-	totalHotAccesses := 0
 
 	for i := 0; i < numReads; i++ {
 		keyIdx := zipfian(numKeys, 1.5)
 
-		// Track top 10% hot keys without storing all keys (memory efficient)
 		if keyIdx < numKeys/10 {
 			topHotKeyAccesses++
 		}
-		totalHotAccesses++
 
 		key := fmt.Sprintf("key-%010d", keyIdx)
 		segs := meta.GetAllSegments()
@@ -891,7 +896,7 @@ func runZipfian(w wal.WAL, mem memtable.Memtable, meta metadata.Tracker,
 	fmt.Println()
 
 	// Report hot key stats
-	if totalHotAccesses > 0 {
+	if numReads > 0 {
 		fmt.Printf("  Hot key distribution: Top 10%% of keys = %d%% of accesses\n",
 			topHotKeyAccesses*100/numReads)
 	}
